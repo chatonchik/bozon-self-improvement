@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Lifecycle helper: convert RSS signals into scenario + opportunity map.
- * Meta-improvement: recurrence-aware scoring (same theme across day/week/month gets higher confidence).
+ * Meta-improvement: source-quality-aware scoring (credibility weighting + low-trust penalty).
  */
 
 const FEEDS = [
@@ -10,6 +10,22 @@ const FEEDS = [
   { url: "https://shir-man.com/api/rss?sort=week", bucket: "week" },
   { url: "https://shir-man.com/api/rss?sort=month", bucket: "month" },
 ];
+
+const DOMAIN_TRUST = {
+  "openai.com": 0.95,
+  "anthropic.com": 0.95,
+  "federalreserve.gov": 1.0,
+  "ecb.europa.eu": 1.0,
+  "acm.org": 0.9,
+  "github.com": 0.85,
+  "huggingface.co": 0.8,
+  "news.ycombinator.com": 0.7,
+  "lesswrong.com": 0.75,
+  "lobste.rs": 0.7,
+  "reddit.com": 0.45,
+  "twitter.com": 0.45,
+  "x.com": 0.45,
+};
 
 const THEMES = [
   {
@@ -91,8 +107,16 @@ function hostname(url) {
   }
 }
 
+function sourceWeight(domain) {
+  if (!domain) return 0.55;
+  for (const [known, weight] of Object.entries(DOMAIN_TRUST)) {
+    if (domain === known || domain.endsWith(`.${known}`)) return weight;
+  }
+  return 0.65;
+}
+
 async function fetchFeed({ url, bucket }) {
-  const res = await fetch(url, { headers: { "user-agent": "openclaw-lifecycle-forecast/1.0" } });
+  const res = await fetch(url, { headers: { "user-agent": "openclaw-lifecycle-forecast/1.1" } });
   if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
   const xml = await res.text();
 
@@ -100,12 +124,14 @@ async function fetchFeed({ url, bucket }) {
     const link = extractTag(block, "link");
     const title = extractTag(block, "title");
     const description = extractTag(block, "description") || extractTag(block, "content:encoded");
+    const domain = hostname(link);
     return {
       bucket,
       link,
       title,
       description,
-      domain: hostname(link),
+      domain,
+      trust: sourceWeight(domain),
       text: `${title} ${description}`.toLowerCase(),
     };
   });
@@ -126,22 +152,32 @@ function scoreTheme(items, theme) {
   const byBucket = new Set();
   let hits = 0;
   let weighted = 0;
+  let trustedHits = 0;
+  let lowTrustHits = 0;
 
   for (const it of items) {
     const hit = theme.keywords.some((kw) => it.text.includes(kw));
     if (!hit) continue;
     hits += 1;
-    weighted += bucketWeight(it.bucket);
+    weighted += bucketWeight(it.bucket) * it.trust;
     byBucket.add(it.bucket);
+    if (it.trust >= 0.85) trustedHits += 1;
+    if (it.trust < 0.6) lowTrustHits += 1;
   }
 
   const recurrence = byBucket.size / 4; // 0..1 across trending/day/week/month
-  const raw = weighted * 0.65 + recurrence * 4.0;
+  const qualityRatio = hits ? trustedHits / hits : 0;
+  const lowTrustPenalty = hits ? lowTrustHits / hits : 0;
+
+  const raw = weighted * 0.65 + recurrence * 3.5 + qualityRatio * 1.8 - lowTrustPenalty * 1.2;
   const probability = clamp(0.2 + raw / 10, 0.2, 0.85);
 
   return {
     hits,
     recurrence,
+    trustedHits,
+    lowTrustHits,
+    qualityRatio: Number(qualityRatio.toFixed(2)),
     probability: Number(probability.toFixed(2)),
     buckets: [...byBucket],
   };
@@ -154,6 +190,12 @@ function horizonForTheme(themeId) {
   return "долгосрок (3-12 месяцев)";
 }
 
+function confidenceLabel(recurrence, qualityRatio) {
+  if (recurrence >= 0.5 && qualityRatio >= 0.5) return "высокая";
+  if (recurrence >= 0.5 || qualityRatio >= 0.45) return "средняя/высокая";
+  return "средняя";
+}
+
 async function main() {
   const items = (await Promise.all(FEEDS.map(fetchFeed))).flat();
 
@@ -163,9 +205,17 @@ async function main() {
       theme: theme.label,
       horizon: horizonForTheme(theme.id),
       probability: s.probability,
-      confidence: s.recurrence >= 0.5 ? "средняя/высокая" : "средняя",
-      drivers: [`Совпадение по ключевым сигналам: ${s.hits}`, `Покрытие горизонтов (recurrence): ${s.buckets.join(", ") || "нет"}`],
-      risks: ["Часть источников в трендовом фиде может быть шумной/хайповой", "Сигналы не являются финансовой рекомендацией"],
+      confidence: confidenceLabel(s.recurrence, s.qualityRatio),
+      drivers: [
+        `Совпадение по ключевым сигналам: ${s.hits}`,
+        `Покрытие горизонтов (recurrence): ${s.buckets.join(", ") || "нет"}`,
+        `Доля надежных источников: ${(s.qualityRatio * 100).toFixed(0)}%`,
+      ],
+      risks: [
+        `Сигналов из низконадежных источников: ${s.lowTrustHits}`,
+        "Часть трендового фида может быть шумной/хайповой",
+        "Сигналы не являются финансовой рекомендацией",
+      ],
       indicators: theme.keywords.slice(0, 3),
       opportunities: theme.opportunities,
     };
@@ -174,7 +224,7 @@ async function main() {
   console.log(`# Lifecycle opportunity forecast (${new Date().toISOString()})`);
   console.log();
   console.log(`Items analyzed: ${items.length}`);
-  console.log("Meta-improvement: recurrence-aware confidence scoring enabled.");
+  console.log("Meta-improvement: source-quality-aware scoring enabled (credibility weighting + low-trust penalty).");
   console.log();
   console.log(JSON.stringify({ scenarios }, null, 2));
 }
