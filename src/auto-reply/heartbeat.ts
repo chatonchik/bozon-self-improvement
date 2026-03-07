@@ -103,8 +103,9 @@ function stripTokenAtEdges(raw: string): { text: string; didStrip: boolean } {
     }
   }
 
-  const collapsed = text.replace(/\s+/g, " ").trim();
-  return { text: collapsed, didStrip };
+  // Keep original inner formatting (newlines/bullets/code) intact.
+  // Only trim edges after stripping token wrappers.
+  return { text: text.trim(), didStrip };
 }
 
 export function stripHeartbeatToken(

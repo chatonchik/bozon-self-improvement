@@ -163,6 +163,15 @@ describe("stripHeartbeatToken", () => {
       didStrip: true,
     });
   });
+
+  it("preserves multiline formatting after stripping edge token", () => {
+    const message = `${HEARTBEAT_TOKEN}\n- check email\n- check calendar`;
+    expect(stripHeartbeatToken(message, { mode: "message" })).toEqual({
+      shouldSkip: false,
+      text: "- check email\n- check calendar",
+      didStrip: true,
+    });
+  });
 });
 
 describe("isHeartbeatContentEffectivelyEmpty", () => {
