@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Lightweight RSS triage for self-improvement loops.
- * Focus: extract actionable agent-engineering signals and filter hype/noise.
+ * Focus: extract actionable AI/agent, macro, and geopolitics signals and filter hype/noise.
  */
 
 const FEEDS = [
@@ -19,26 +19,59 @@ const TRUSTED_DOMAINS = [
   "arxiv.org",
   "huggingface.co",
   "lesswrong.com",
+  "federalreserve.gov",
+  "bls.gov",
+  "ecb.europa.eu",
+  "imf.org",
+  "reuters.com",
+  "ft.com",
 ];
 
-const ACTION_KEYWORDS = [
-  "agent",
-  "tool",
-  "workflow",
-  "eval",
-  "benchmark",
-  "security",
-  "prompt injection",
-  "mcp",
-  "sdk",
-  "api",
-  "release",
-  "model",
-  "reasoning",
-  "inference",
-  "latency",
-  "cost",
-];
+const CATEGORIES = {
+  ai: [
+    "agent",
+    "tool",
+    "workflow",
+    "eval",
+    "benchmark",
+    "security",
+    "prompt injection",
+    "mcp",
+    "sdk",
+    "api",
+    "release",
+    "model",
+    "reasoning",
+    "inference",
+    "latency",
+    "cost",
+  ],
+  macro: [
+    "inflation",
+    "cpi",
+    "payroll",
+    "employment",
+    "fed",
+    "ecb",
+    "rates",
+    "yield",
+    "recession",
+    "gdp",
+    "housing",
+  ],
+  geopolitics: [
+    "sanction",
+    "war",
+    "defense",
+    "department of war",
+    "classified",
+    "china",
+    "iran",
+    "israel",
+    "tariff",
+    "security policy",
+  ],
+};
 
 function decodeHtml(s = "") {
   return s
@@ -65,18 +98,39 @@ function hostname(url) {
   }
 }
 
+function scoreByCategory(text, keywords) {
+  return keywords.reduce((acc, keyword) => acc + (text.includes(keyword) ? 1 : 0), 0);
+}
+
 function scoreItem(item) {
   const hay = `${item.title} ${item.description}`.toLowerCase();
-  const kw = ACTION_KEYWORDS.filter((k) => hay.includes(k)).length;
-  const trusted = TRUSTED_DOMAINS.some((d) => item.domain === d || item.domain.endsWith(`.${d}`));
+  const aiScore = scoreByCategory(hay, CATEGORIES.ai);
+  const macroScore = scoreByCategory(hay, CATEGORIES.macro);
+  const geoScore = scoreByCategory(hay, CATEGORIES.geopolitics);
 
-  // Penalize obvious hype-only sources when no actionable keywords.
-  const hypePenalty = /reddit|twitter|x\.com/.test(item.domain) && kw < 2 ? 2 : 0;
-  return kw + (trusted ? 2 : 0) - hypePenalty;
+  const trusted = TRUSTED_DOMAINS.some((d) => item.domain === d || item.domain.endsWith(`.${d}`));
+  const hypePenalty = /reddit|twitter|x\.com/.test(item.domain) && aiScore + macroScore + geoScore < 2 ? 2 : 0;
+
+  const total = aiScore + macroScore + geoScore + (trusted ? 2 : 0) - hypePenalty;
+
+  return {
+    total,
+    aiScore,
+    macroScore,
+    geoScore,
+    trusted,
+    hypePenalty,
+    dominantCategory:
+      aiScore >= macroScore && aiScore >= geoScore
+        ? "ai"
+        : macroScore >= geoScore
+          ? "macro"
+          : "geopolitics",
+  };
 }
 
 async function fetchFeed(url) {
-  const res = await fetch(url, { headers: { "user-agent": "openclaw-rss-triage/1.0" } });
+  const res = await fetch(url, { headers: { "user-agent": "openclaw-rss-triage/1.1" } });
   if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
   const xml = await res.text();
 
@@ -95,7 +149,27 @@ async function fetchFeed(url) {
   return items;
 }
 
+function summarizeScenarios(topItems) {
+  const byCat = { ai: 0, macro: 0, geopolitics: 0 };
+  for (const item of topItems) byCat[item.dominantCategory]++;
+
+  const total = Math.max(1, topItems.length);
+  return {
+    shortHorizonBias: {
+      ai: Number((byCat.ai / total).toFixed(2)),
+      macro: Number((byCat.macro / total).toFixed(2)),
+      geopolitics: Number((byCat.geopolitics / total).toFixed(2)),
+    },
+    monitor: [
+      "Подтвержденные инциденты prompt-injection/agent compromise",
+      "Сигналы инфляции/ставок (CPI, решения ФРС/ЕЦБ)",
+      "Геополитические эскалации с влиянием на сырье/риск-аппетит",
+    ],
+  };
+}
+
 async function main() {
+  const asJson = process.argv.includes("--json");
   const all = (await Promise.all(FEEDS.map(fetchFeed))).flat();
   const dedup = new Map();
   for (const item of all) {
@@ -104,36 +178,67 @@ async function main() {
   }
 
   const ranked = [...dedup.values()]
-    .map((it) => ({ ...it, score: scoreItem(it) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 12);
+    .map((it) => ({ ...it, ...scoreItem(it) }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 16);
 
-  const high = ranked.filter((x) => x.score >= 4).slice(0, 6);
-  const noise = ranked
-    .filter((x) => x.score <= 2)
-    .slice(0, 4)
-    .map((x) => `- ${x.title} (${x.domain || "unknown"})`);
+  const high = ranked.filter((x) => x.total >= 4).slice(0, 8);
+  const noise = ranked.filter((x) => x.total <= 2).slice(0, 6);
+  const scenarioHints = summarizeScenarios(high);
 
-  console.log(`# AI/Agent signal triage (${new Date().toISOString()})`);
+  const result = {
+    generatedAt: new Date().toISOString(),
+    feeds: FEEDS,
+    uniqueItems: dedup.size,
+    highSignal: high.map((x) => ({
+      title: x.title,
+      link: x.link,
+      domain: x.domain,
+      totalScore: x.total,
+      category: x.dominantCategory,
+      aiScore: x.aiScore,
+      macroScore: x.macroScore,
+      geoScore: x.geoScore,
+      trusted: x.trusted,
+    })),
+    lowSignal: noise.map((x) => ({
+      title: x.title,
+      domain: x.domain,
+      totalScore: x.total,
+    })),
+    scenarioHints,
+  };
+
+  if (asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(`# AI/Agent+Macro triage (${result.generatedAt})`);
   console.log();
   console.log(`Analyzed feeds: ${FEEDS.length}, unique items: ${dedup.size}`);
   console.log();
   console.log("## High-signal candidates");
-  for (const it of high) {
-    console.log(`- [score:${it.score}] ${it.title} (${it.domain})`);
+  for (const it of result.highSignal) {
+    console.log(`- [score:${it.totalScore}] [${it.category}] ${it.title} (${it.domain})`);
     console.log(`  ${it.link}`);
   }
   console.log();
   console.log("## Likely noise / low-actionability");
-  if (noise.length === 0) {
+  if (result.lowSignal.length === 0) {
     console.log("- None detected in current window.");
   } else {
-    console.log(noise.join("\n"));
+    for (const it of result.lowSignal) {
+      console.log(`- [score:${it.totalScore}] ${it.title} (${it.domain || "unknown"})`);
+    }
   }
   console.log();
-  console.log("## Suggested immediate actions");
-  console.log("- Turn top 1-2 high-signal items into concrete repo tasks with owner + ETA.");
-  console.log("- Ignore low-actionability hype unless independently corroborated.");
+  console.log("## Scenario hints (short horizon)");
+  console.log(`- AI share: ${result.scenarioHints.shortHorizonBias.ai}`);
+  console.log(`- Macro share: ${result.scenarioHints.shortHorizonBias.macro}`);
+  console.log(`- Geopolitics share: ${result.scenarioHints.shortHorizonBias.geopolitics}`);
+  console.log("- Monitor:");
+  for (const item of result.scenarioHints.monitor) console.log(`  - ${item}`);
 }
 
 main().catch((err) => {

@@ -8,6 +8,12 @@ Use this when running self-improvement loops to quickly separate high-signal age
 node scripts/rss-agent-signal-triage.mjs
 ```
 
+JSON output (for piping into other automations):
+
+```bash
+node scripts/rss-agent-signal-triage.mjs --json
+```
+
 ## What it does
 
 - Pulls and merges these feeds:
@@ -16,14 +22,18 @@ node scripts/rss-agent-signal-triage.mjs
   - `https://shir-man.com/api/rss?sort=week`
   - `https://shir-man.com/api/rss?sort=month`
 - Deduplicates by URL
-- Scores items by:
-  - actionable keywords (agent/tool/workflow/eval/security/etc.)
-  - trusted domains
-  - hype penalty for low-actionability social spikes
-- Prints:
-  - high-signal candidates (with links)
+- Scores items by category:
+  - AI/agent engineering signals
+  - macroeconomic signals
+  - geopolitics/policy signals
+- Adds source quality weighting:
+  - trusted domains boost score
+  - hype/low-substance social spikes get penalty
+- Produces:
+  - ranked high-signal candidates (with category + sub-scores)
   - likely noise
-  - two immediate next-action reminders
+  - short-horizon scenario hints + monitor indicators
+  - optional machine-readable JSON output
 
 ## Why this exists
 
