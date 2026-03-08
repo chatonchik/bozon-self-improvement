@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Lifecycle helper: convert RSS signals into scenario + opportunity map.
- * Meta-improvement: source-quality-aware scoring (credibility weighting + low-trust penalty).
+ * Meta-improvement: evidence gate + source-quality-aware scoring.
  */
 
 const FEEDS = [
@@ -82,6 +82,15 @@ const THEMES = [
   },
 ];
 
+function getNumericArg(name, fallback) {
+  const raw = process.argv.find((arg) => arg.startsWith(`--${name}=`));
+  if (!raw) return fallback;
+  const value = Number(raw.split("=")[1]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+const MIN_HITS = getNumericArg("min-hits", 2);
+
 function decodeHtml(s = "") {
   return s
     .replaceAll("&amp;", "&")
@@ -116,7 +125,7 @@ function sourceWeight(domain) {
 }
 
 async function fetchFeed({ url, bucket }) {
-  const res = await fetch(url, { headers: { "user-agent": "openclaw-lifecycle-forecast/1.1" } });
+  const res = await fetch(url, { headers: { "user-agent": "openclaw-lifecycle-forecast/1.2" } });
   if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
   const xml = await res.text();
 
@@ -168,9 +177,10 @@ function scoreTheme(items, theme) {
   const recurrence = byBucket.size / 4; // 0..1 across trending/day/week/month
   const qualityRatio = hits ? trustedHits / hits : 0;
   const lowTrustPenalty = hits ? lowTrustHits / hits : 0;
+  const evidenceFactor = clamp(hits / Math.max(MIN_HITS, 1), 0.35, 1);
 
   const raw = weighted * 0.65 + recurrence * 3.5 + qualityRatio * 1.8 - lowTrustPenalty * 1.2;
-  const probability = clamp(0.2 + raw / 10, 0.2, 0.85);
+  const probability = clamp((0.2 + raw / 10) * evidenceFactor, 0.15, 0.85);
 
   return {
     hits,
@@ -178,6 +188,7 @@ function scoreTheme(items, theme) {
     trustedHits,
     lowTrustHits,
     qualityRatio: Number(qualityRatio.toFixed(2)),
+    evidenceFactor: Number(evidenceFactor.toFixed(2)),
     probability: Number(probability.toFixed(2)),
     buckets: [...byBucket],
   };
@@ -190,7 +201,8 @@ function horizonForTheme(themeId) {
   return "долгосрок (3-12 месяцев)";
 }
 
-function confidenceLabel(recurrence, qualityRatio) {
+function confidenceLabel(recurrence, qualityRatio, evidenceFactor) {
+  if (evidenceFactor < 0.75) return "средняя/низкая";
   if (recurrence >= 0.5 && qualityRatio >= 0.5) return "высокая";
   if (recurrence >= 0.5 || qualityRatio >= 0.45) return "средняя/высокая";
   return "средняя";
@@ -205,11 +217,12 @@ async function main() {
       theme: theme.label,
       horizon: horizonForTheme(theme.id),
       probability: s.probability,
-      confidence: confidenceLabel(s.recurrence, s.qualityRatio),
+      confidence: confidenceLabel(s.recurrence, s.qualityRatio, s.evidenceFactor),
       drivers: [
         `Совпадение по ключевым сигналам: ${s.hits}`,
         `Покрытие горизонтов (recurrence): ${s.buckets.join(", ") || "нет"}`,
         `Доля надежных источников: ${(s.qualityRatio * 100).toFixed(0)}%`,
+        `Коэффициент достаточности данных: ${s.evidenceFactor}`,
       ],
       risks: [
         `Сигналов из низконадежных источников: ${s.lowTrustHits}`,
@@ -224,7 +237,7 @@ async function main() {
   console.log(`# Lifecycle opportunity forecast (${new Date().toISOString()})`);
   console.log();
   console.log(`Items analyzed: ${items.length}`);
-  console.log("Meta-improvement: source-quality-aware scoring enabled (credibility weighting + low-trust penalty).");
+  console.log(`Meta-improvement: evidence gate enabled (min-hits=${MIN_HITS}) + source-quality weighting.`);
   console.log();
   console.log(JSON.stringify({ scenarios }, null, 2));
 }
