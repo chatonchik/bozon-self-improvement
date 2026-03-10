@@ -124,6 +124,17 @@ function sourceWeight(domain) {
   return 0.65;
 }
 
+function recencyWeightFromDate(pubDateRaw) {
+  if (!pubDateRaw) return 0.75;
+  const t = Date.parse(pubDateRaw);
+  if (!Number.isFinite(t)) return 0.75;
+  const ageDays = (Date.now() - t) / 86_400_000;
+  if (ageDays <= 0) return 1;
+  // half-life ~14 days: newer signals influence scenarios more.
+  const w = Math.exp((-Math.log(2) * ageDays) / 14);
+  return clamp(w, 0.35, 1);
+}
+
 async function fetchFeed({ url, bucket }) {
   const res = await fetch(url, { headers: { "user-agent": "openclaw-lifecycle-forecast/1.2" } });
   if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
@@ -133,14 +144,17 @@ async function fetchFeed({ url, bucket }) {
     const link = extractTag(block, "link");
     const title = extractTag(block, "title");
     const description = extractTag(block, "description") || extractTag(block, "content:encoded");
+    const pubDate = extractTag(block, "pubDate");
     const domain = hostname(link);
     return {
       bucket,
       link,
       title,
       description,
+      pubDate,
       domain,
       trust: sourceWeight(domain),
+      recency: recencyWeightFromDate(pubDate),
       text: `${title} ${description}`.toLowerCase(),
     };
   });
@@ -163,13 +177,15 @@ function scoreTheme(items, theme) {
   let weighted = 0;
   let trustedHits = 0;
   let lowTrustHits = 0;
+  let recencyTotal = 0;
   const domains = new Set();
 
   for (const it of items) {
     const hit = theme.keywords.some((kw) => it.text.includes(kw));
     if (!hit) continue;
     hits += 1;
-    weighted += bucketWeight(it.bucket) * it.trust;
+    weighted += bucketWeight(it.bucket) * it.trust * it.recency;
+    recencyTotal += it.recency;
     byBucket.add(it.bucket);
     if (it.domain) domains.add(it.domain);
     if (it.trust >= 0.85) trustedHits += 1;
@@ -180,9 +196,10 @@ function scoreTheme(items, theme) {
   const qualityRatio = hits ? trustedHits / hits : 0;
   const lowTrustPenalty = hits ? lowTrustHits / hits : 0;
   const sourceDiversity = hits ? domains.size / hits : 0; // penalize single-domain echo
+  const avgRecency = hits ? recencyTotal / hits : 0.6;
   const evidenceFactor = clamp(hits / Math.max(MIN_HITS, 1), 0.35, 1);
 
-  const raw = weighted * 0.6 + recurrence * 3.2 + qualityRatio * 1.6 + sourceDiversity * 1.4 - lowTrustPenalty * 1.2;
+  const raw = weighted * 0.6 + recurrence * 3.2 + qualityRatio * 1.6 + sourceDiversity * 1.2 + avgRecency * 1.2 - lowTrustPenalty * 1.2;
   const probability = clamp((0.2 + raw / 10) * evidenceFactor, 0.15, 0.85);
 
   return {
@@ -192,6 +209,7 @@ function scoreTheme(items, theme) {
     lowTrustHits,
     qualityRatio: Number(qualityRatio.toFixed(2)),
     sourceDiversity: Number(sourceDiversity.toFixed(2)),
+    avgRecency: Number(avgRecency.toFixed(2)),
     evidenceFactor: Number(evidenceFactor.toFixed(2)),
     probability: Number(probability.toFixed(2)),
     buckets: [...byBucket],
@@ -227,6 +245,7 @@ async function main() {
         `Покрытие горизонтов (recurrence): ${s.buckets.join(", ") || "нет"}`,
         `Доля надежных источников: ${(s.qualityRatio * 100).toFixed(0)}%`,
         `Разнообразие источников: ${(s.sourceDiversity * 100).toFixed(0)}%`,
+        `Актуальность сигналов (time-decay): ${(s.avgRecency * 100).toFixed(0)}%`,
         `Коэффициент достаточности данных: ${s.evidenceFactor}`,
       ],
       risks: [
@@ -242,7 +261,7 @@ async function main() {
   console.log(`# Lifecycle opportunity forecast (${new Date().toISOString()})`);
   console.log();
   console.log(`Items analyzed: ${items.length}`);
-  console.log(`Meta-improvement: evidence gate (min-hits=${MIN_HITS}) + source-quality weighting + source-diversity factor.`);
+  console.log(`Meta-improvement: evidence gate (min-hits=${MIN_HITS}) + source-quality weighting + source-diversity factor + recency time-decay.`);
   console.log();
   console.log(JSON.stringify({ scenarios }, null, 2));
 }
