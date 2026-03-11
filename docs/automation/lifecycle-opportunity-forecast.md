@@ -8,10 +8,10 @@
 node scripts/lifecycle-opportunity-forecast.mjs
 ```
 
-Опционально можно включить более строгий порог доказательности:
+Опционально можно включить более строгие пороги доказательности и качества:
 
 ```bash
-node scripts/lifecycle-opportunity-forecast.mjs --min-hits=3
+node scripts/lifecycle-opportunity-forecast.mjs --min-hits=3 --min-quality=0.25
 ```
 
 ## Что нового (meta-improvement)
@@ -31,6 +31,12 @@ node scripts/lifecycle-opportunity-forecast.mjs --min-hits=3
 
 - более свежие сигналы получают больший вес;
 - старые инфоповоды постепенно теряют влияние (half-life ≈ 14 дней).
+
+Новый шаг этого цикла: **quality guardrail + quality gate** (`qualityGuard`, `qualityGate`):
+
+- если доля надёжных источников низкая, итоговая вероятность автоматически ограничивается;
+- порог минимального качества задаётся `--min-quality` (по умолчанию `0.2`);
+- это снижает риск завышенных вероятностей по «эхо-сигналам» из шумных/низкодоверенных доменов.
 
 Это уменьшает риск переобучения на единичные инфоповоды и делает выводы устойчивее и более актуальными.
 

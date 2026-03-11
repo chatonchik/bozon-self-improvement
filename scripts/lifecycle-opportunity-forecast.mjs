@@ -90,6 +90,7 @@ function getNumericArg(name, fallback) {
 }
 
 const MIN_HITS = getNumericArg("min-hits", 2);
+const MIN_QUALITY_RATIO = getNumericArg("min-quality", 0.2);
 
 function decodeHtml(s = "") {
   return s
@@ -200,7 +201,11 @@ function scoreTheme(items, theme) {
   const evidenceFactor = clamp(hits / Math.max(MIN_HITS, 1), 0.35, 1);
 
   const raw = weighted * 0.6 + recurrence * 3.2 + qualityRatio * 1.6 + sourceDiversity * 1.2 + avgRecency * 1.2 - lowTrustPenalty * 1.2;
-  const probability = clamp((0.2 + raw / 10) * evidenceFactor, 0.15, 0.85);
+  const baseProbability = clamp((0.2 + raw / 10) * evidenceFactor, 0.15, 0.85);
+  // Quality guardrail: do not allow very high probability from mostly weak/noisy sources.
+  const qualityGuard = clamp(0.55 + qualityRatio * 0.9 + sourceDiversity * 0.25 - lowTrustPenalty * 0.2, 0.5, 1);
+  const qualityGate = qualityRatio >= MIN_QUALITY_RATIO ? 1 : clamp(qualityRatio / Math.max(MIN_QUALITY_RATIO, 0.01), 0.45, 1);
+  const probability = clamp(baseProbability * qualityGuard * qualityGate, 0.15, 0.85);
 
   return {
     hits,
@@ -211,6 +216,8 @@ function scoreTheme(items, theme) {
     sourceDiversity: Number(sourceDiversity.toFixed(2)),
     avgRecency: Number(avgRecency.toFixed(2)),
     evidenceFactor: Number(evidenceFactor.toFixed(2)),
+    qualityGuard: Number(qualityGuard.toFixed(2)),
+    qualityGate: Number(qualityGate.toFixed(2)),
     probability: Number(probability.toFixed(2)),
     buckets: [...byBucket],
   };
@@ -247,6 +254,8 @@ async function main() {
         `Разнообразие источников: ${(s.sourceDiversity * 100).toFixed(0)}%`,
         `Актуальность сигналов (time-decay): ${(s.avgRecency * 100).toFixed(0)}%`,
         `Коэффициент достаточности данных: ${s.evidenceFactor}`,
+        `Качество источников (guardrail): ${s.qualityGuard}`,
+        `Порог качества сигналов (gate): ${s.qualityGate}`,
       ],
       risks: [
         `Сигналов из низконадежных источников: ${s.lowTrustHits}`,
@@ -261,7 +270,7 @@ async function main() {
   console.log(`# Lifecycle opportunity forecast (${new Date().toISOString()})`);
   console.log();
   console.log(`Items analyzed: ${items.length}`);
-  console.log(`Meta-improvement: evidence gate (min-hits=${MIN_HITS}) + source-quality weighting + source-diversity factor + recency time-decay.`);
+  console.log(`Meta-improvement: evidence gate (min-hits=${MIN_HITS}) + source-quality weighting + source-diversity factor + recency time-decay + quality guardrail (min-quality=${MIN_QUALITY_RATIO}).`);
   console.log();
   console.log(JSON.stringify({ scenarios }, null, 2));
 }
