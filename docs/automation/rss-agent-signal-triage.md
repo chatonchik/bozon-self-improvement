@@ -29,8 +29,11 @@ node scripts/rss-agent-signal-triage.mjs --json
 - Adds source quality weighting:
   - trusted domains boost score
   - hype/low-substance social spikes get penalty
+  - corroboration-aware evidence scoring:
+    - same topic across independent domains increases confidence
+    - single-source untrusted items receive a penalty
 - Produces:
-  - ranked high-signal candidates (with category + sub-scores)
+  - ranked high-signal candidates (with category + sub-scores + evidence fields)
   - likely noise
   - short-horizon scenario hints + monitor indicators
   - optional machine-readable JSON output

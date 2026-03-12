@@ -102,7 +102,18 @@ function scoreByCategory(text, keywords) {
   return keywords.reduce((acc, keyword) => acc + (text.includes(keyword) ? 1 : 0), 0);
 }
 
-function scoreItem(item) {
+function topicSignature(item) {
+  return `${item.title} ${item.description}`
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 4)
+    .slice(0, 8)
+    .join(" ");
+}
+
+function scoreItem(item, corroborationCount = 1) {
   const hay = `${item.title} ${item.description}`.toLowerCase();
   const aiScore = scoreByCategory(hay, CATEGORIES.ai);
   const macroScore = scoreByCategory(hay, CATEGORIES.macro);
@@ -110,8 +121,11 @@ function scoreItem(item) {
 
   const trusted = TRUSTED_DOMAINS.some((d) => item.domain === d || item.domain.endsWith(`.${d}`));
   const hypePenalty = /reddit|twitter|x\.com/.test(item.domain) && aiScore + macroScore + geoScore < 2 ? 2 : 0;
+  const corroborationBoost = Math.min(2, Math.max(0, corroborationCount - 1));
+  const singleSourcePenalty = !trusted && corroborationCount < 2 ? 1 : 0;
+  const evidenceScore = (trusted ? 2 : 0) + corroborationBoost - singleSourcePenalty;
 
-  const total = aiScore + macroScore + geoScore + (trusted ? 2 : 0) - hypePenalty;
+  const total = aiScore + macroScore + geoScore + evidenceScore - hypePenalty;
 
   return {
     total,
@@ -120,6 +134,8 @@ function scoreItem(item) {
     geoScore,
     trusted,
     hypePenalty,
+    corroborationCount,
+    evidenceScore,
     dominantCategory:
       aiScore >= macroScore && aiScore >= geoScore
         ? "ai"
@@ -177,12 +193,24 @@ async function main() {
     if (!dedup.has(key)) dedup.set(key, item);
   }
 
-  const ranked = [...dedup.values()]
-    .map((it) => ({ ...it, ...scoreItem(it) }))
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 16);
+  const topicDomainMap = new Map();
+  for (const item of dedup.values()) {
+    const sig = topicSignature(item);
+    if (!sig) continue;
+    if (!topicDomainMap.has(sig)) topicDomainMap.set(sig, new Set());
+    topicDomainMap.get(sig).add(item.domain || "unknown");
+  }
 
-  const high = ranked.filter((x) => x.total >= 4).slice(0, 8);
+  const ranked = [...dedup.values()]
+    .map((it) => {
+      const sig = topicSignature(it);
+      const corroborationCount = topicDomainMap.get(sig)?.size || 1;
+      return { ...it, ...scoreItem(it, corroborationCount) };
+    })
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 20);
+
+  const high = ranked.filter((x) => x.total >= 4 && (x.trusted || x.corroborationCount >= 2)).slice(0, 8);
   const noise = ranked.filter((x) => x.total <= 2).slice(0, 6);
   const scenarioHints = summarizeScenarios(high);
 
@@ -200,6 +228,8 @@ async function main() {
       macroScore: x.macroScore,
       geoScore: x.geoScore,
       trusted: x.trusted,
+      corroborationCount: x.corroborationCount,
+      evidenceScore: x.evidenceScore,
     })),
     lowSignal: noise.map((x) => ({
       title: x.title,
@@ -220,7 +250,9 @@ async function main() {
   console.log();
   console.log("## High-signal candidates");
   for (const it of result.highSignal) {
-    console.log(`- [score:${it.totalScore}] [${it.category}] ${it.title} (${it.domain})`);
+    console.log(
+      `- [score:${it.totalScore}] [${it.category}] [evidence:${it.evidenceScore}] [corroboration:${it.corroborationCount}] ${it.title} (${it.domain})`,
+    );
     console.log(`  ${it.link}`);
   }
   console.log();
