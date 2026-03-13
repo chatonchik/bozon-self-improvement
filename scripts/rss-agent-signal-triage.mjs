@@ -170,11 +170,24 @@ function summarizeScenarios(topItems) {
   for (const item of topItems) byCat[item.dominantCategory]++;
 
   const total = Math.max(1, topItems.length);
+  const domainCounts = new Map();
+  for (const item of topItems) {
+    const d = item.domain || "unknown";
+    domainCounts.set(d, (domainCounts.get(d) || 0) + 1);
+  }
+  const topDomainShare = Number(
+    ((Math.max(0, ...[...domainCounts.values()]) / Math.max(1, topItems.length)) || 0).toFixed(2),
+  );
+
   return {
     shortHorizonBias: {
       ai: Number((byCat.ai / total).toFixed(2)),
       macro: Number((byCat.macro / total).toFixed(2)),
       geopolitics: Number((byCat.geopolitics / total).toFixed(2)),
+    },
+    sourceDiversity: {
+      uniqueDomains: domainCounts.size,
+      topDomainShare,
     },
     monitor: [
       "Подтвержденные инциденты prompt-injection/agent compromise",
@@ -182,6 +195,19 @@ function summarizeScenarios(topItems) {
       "Геополитические эскалации с влиянием на сырье/риск-аппетит",
     ],
   };
+}
+
+function capPerDomain(items, maxPerDomain = 2) {
+  const counts = new Map();
+  const out = [];
+  for (const item of items) {
+    const d = item.domain || "unknown";
+    const n = counts.get(d) || 0;
+    if (n >= maxPerDomain) continue;
+    counts.set(d, n + 1);
+    out.push(item);
+  }
+  return out;
 }
 
 async function main() {
@@ -210,7 +236,8 @@ async function main() {
     .sort((a, b) => b.total - a.total)
     .slice(0, 20);
 
-  const high = ranked.filter((x) => x.total >= 4 && (x.trusted || x.corroborationCount >= 2)).slice(0, 8);
+  const highRaw = ranked.filter((x) => x.total >= 4 && (x.trusted || x.corroborationCount >= 2));
+  const high = capPerDomain(highRaw, 2).slice(0, 8);
   const noise = ranked.filter((x) => x.total <= 2).slice(0, 6);
   const scenarioHints = summarizeScenarios(high);
 
@@ -269,6 +296,8 @@ async function main() {
   console.log(`- AI share: ${result.scenarioHints.shortHorizonBias.ai}`);
   console.log(`- Macro share: ${result.scenarioHints.shortHorizonBias.macro}`);
   console.log(`- Geopolitics share: ${result.scenarioHints.shortHorizonBias.geopolitics}`);
+  console.log(`- Unique domains in high-signal: ${result.scenarioHints.sourceDiversity.uniqueDomains}`);
+  console.log(`- Top-domain share in high-signal: ${result.scenarioHints.sourceDiversity.topDomainShare}`);
   console.log("- Monitor:");
   for (const item of result.scenarioHints.monitor) console.log(`  - ${item}`);
 }

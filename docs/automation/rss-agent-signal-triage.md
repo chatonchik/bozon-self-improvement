@@ -34,8 +34,10 @@ node scripts/rss-agent-signal-triage.mjs --json
     - single-source untrusted items receive a penalty
 - Produces:
   - ranked high-signal candidates (with category + sub-scores + evidence fields)
+  - domain-diversified high-signal set (caps repeated domains to reduce echo-chamber bias)
   - likely noise
   - short-horizon scenario hints + monitor indicators
+  - source-diversity metrics (`uniqueDomains`, `topDomainShare`)
   - optional machine-readable JSON output
 
 ## Why this exists
